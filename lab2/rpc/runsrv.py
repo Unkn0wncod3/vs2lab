@@ -9,6 +9,7 @@ logger = logging.getLogger('vs2lab.lab2.rpc.runsrv')
 chan = lab_channel.Channel()
 chan.channel.flushall()
 logger.debug('Flushed all redis keys.')
+logger.info('Redis channel cleared. Async RPC server is starting.')
 
 srv = rpc.Server()
 srv.run()

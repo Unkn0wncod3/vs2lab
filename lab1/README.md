@@ -208,8 +208,10 @@ pipenv run python -c "import clientserver; s=clientserver.Server(); s.serve()"
 
 Terminal2 (Client):
 `cd /workspaces/vs2lab/lab1
-pipenv run python -c "import clientserver; c=clientserver.Client(); c.call()"`
+pipenv run python -c "import clientserver; c=clientserver.Client(); c.call()"
+`
 
 ### Clientserver testen
 `cd /workspaces/vs2lab/lab1
-pipenv run python test_clientserver.py`
+pipenv run python test_clientserver.py
+`

@@ -1,11 +1,13 @@
 import constRPC
+import threading
+import time
 
 from context import lab_channel
 
 
 class DBList:
-    def __init__(self, basic_list):
-        self.value = list(basic_list)
+    def __init__(self, start_list):
+        self.value = list(start_list)
 
     def append(self, data):
         self.value = self.value + [data]
@@ -14,45 +16,65 @@ class DBList:
 
 class Client:
     def __init__(self):
-        self.chan = lab_channel.Channel()
-        self.client = self.chan.join('client')
+        self.channel = lab_channel.Channel()
+        self.client = self.channel.join('client')
         self.server = None
+        self.result_thread = None
 
     def run(self):
-        self.chan.bind(self.client)
-        self.server = self.chan.subgroup('server')
+        self.channel.bind(self.client)
+        self.server = self.channel.subgroup('server')
 
     def stop(self):
-        self.chan.leave('client')
+        if self.result_thread is not None:
+            self.result_thread.join()
+        self.channel.leave('client')
 
-    def append(self, data, db_list):
+    def _wait_for_result(self, callback_function):
+        while True:
+            reply = self.channel.receive_from(self.server)
+            if reply[1][0] == constRPC.RESULT:
+                callback_function(reply[1][1])
+                return
+
+    def append(self, data, db_list, callback_function):
         assert isinstance(db_list, DBList)
-        msglst = (constRPC.APPEND, data, db_list)  # message payload
-        self.chan.send_to(self.server, msglst)  # send msg to server
-        msgrcv = self.chan.receive_from(self.server)  # wait for response
-        return msgrcv[1]  # pass it to caller
+        request = (constRPC.APPEND, data, db_list)
+        self.channel.send_to(self.server, request)
+        reply = self.channel.receive_from(self.server)
+
+        if reply[1][0] != constRPC.ACK:
+            raise RuntimeError('Expected ACK from server.')
+
+        self.result_thread = threading.Thread(
+            target=self._wait_for_result,
+            args=(callback_function,),
+            daemon=False
+        )
+        self.result_thread.start()
+        return reply[1][1]
 
 
 class Server:
     def __init__(self):
-        self.chan = lab_channel.Channel()
-        self.server = self.chan.join('server')
+        self.channel = lab_channel.Channel()
+        self.server = self.channel.join('server')
         self.timeout = 3
 
     @staticmethod
     def append(data, db_list):
-        assert isinstance(db_list, DBList)  # - Make sure we have a list
+        assert isinstance(db_list, DBList)
         return db_list.append(data)
 
     def run(self):
-        self.chan.bind(self.server)
+        self.channel.bind(self.server)
         while True:
-            msgreq = self.chan.receive_from_any(self.timeout)  # wait for any request
-            if msgreq is not None:
-                client = msgreq[0]  # see who is the caller
-                msgrpc = msgreq[1]  # fetch call & parameters
-                if constRPC.APPEND == msgrpc[0]:  # check what is being requested
-                    result = self.append(msgrpc[1], msgrpc[2])  # do local call
-                    self.chan.send_to({client}, result)  # return response
-                else:
-                    pass  # unsupported request, simply ignore
+            request = self.channel.receive_from_any(self.timeout)
+            if request is not None:
+                client_name = request[0]
+                rpc_call = request[1]
+                if constRPC.APPEND == rpc_call[0]:
+                    self.channel.send_to({client_name}, (constRPC.ACK, constRPC.OK))
+                    time.sleep(10)
+                    result = self.append(rpc_call[1], rpc_call[2])
+                    self.channel.send_to({client_name}, (constRPC.RESULT, result))

@@ -229,3 +229,24 @@ Die ``threading``-API ist hier dokumentiert:
 ### 3.4 Abgabe
 
 Die Abgabe erfolgt durch Abnahme durch einen Dozenten. Packen Sie den kompletten Code zudem als Zip Archiv und laden Sie dieses im ILIAS hoch.
+
+### Starten
+
+Redis Server
+
+```bash
+cd /workspaces/vs2lab/lab2
+redis-server
+```
+
+Server
+```bash
+cd /workspaces/vs2lab/lab2/rpc
+pipenv run python runsrv.py
+```
+
+Client
+```bash
+cd /workspaces/vs2lab/lab2/rpc
+pipenv run python runcl.py
+```
