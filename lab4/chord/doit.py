@@ -10,6 +10,7 @@ Chord Application
 import logging
 import sys
 import multiprocessing as mp
+import random
 
 import chordnode as chord_node
 import constChord
@@ -29,9 +30,24 @@ class DummyChordClient:
         self.channel.bind(self.node_id)
 
     def run(self):
-        print("Implement me pls...")
+        nodes = list(self.channel.subgroup('node'))
+        nodes.sort(key=lambda x: int(x))
+
+        key = random.randrange(self.channel.MAXPROC)
+        start_node = random.choice(nodes)
+
+        print("Client {} looks up key {:04n} at node {:04n}."
+              .format(self.node_id, key, int(start_node)))
+
+        self.channel.send_to({start_node}, (constChord.LOOKUP_REQ, key))
+        sender, reply = self.channel.receive_from({start_node})
+
+        assert reply[0] == constChord.LOOKUP_REP
+        print("Client {} got succ({:04n}) = {:04n} from node {:04n}."
+              .format(self.node_id, key, int(reply[1]), int(sender)))
+
         self.channel.send_to(  # a final multicast
-            {i.decode() for i in list(self.channel.channel.smembers('node'))},
+            set(nodes),
             constChord.STOP)
 
 

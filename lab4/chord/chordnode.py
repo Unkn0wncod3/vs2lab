@@ -114,6 +114,23 @@ class ChordNode:
             return self.finger_table[-1]  # key in [FT[-1],FT[0]]
         assert False # we cannot be here
 
+    def recursive_successor_node(self, key) -> int:
+        """
+        Locate successor of a key by recursively asking the next best node.
+        :param key: key to be located
+        :return: node name of succ(key)
+        """
+        next_id: int = self.local_successor_node(key)
+
+        if next_id == self.node_id:
+            return self.node_id
+
+        self.channel.send_to({str(next_id)}, (constChord.LOOKUP_REQ, key))
+        sender, reply = self.channel.receive_from({str(next_id)})
+
+        assert reply[0] == constChord.LOOKUP_REP
+        return int(reply[1])
+
     def enter(self):
         self.channel.bind(str(self.node_id))  # bind current pid
         self.add_node(self.node_id)
@@ -150,13 +167,9 @@ class ChordNode:
                 self.logger.info("Node {:04n} received LOOKUP {:04n} from {:04n}."
                                  .format(self.node_id, int(request[1]), int(sender)))
 
-                # look up and return local successor 
-                next_id: int = self.local_successor_node(request[1])
-                self.channel.send_to([sender], (constChord.LOOKUP_REP, next_id))
-
-                # Finally do a sanity check
-                if not self.channel.exists(next_id):  # probe for existence
-                    self.delete_node(next_id)  # purge disappeared node
+                # look up and return final successor recursively
+                successor_id: int = self.recursive_successor_node(request[1])
+                self.channel.send_to({sender}, (constChord.LOOKUP_REP, successor_id))
 
             elif request[0] == constChord.JOIN:
                 # Join request (the node was already registered above)
