@@ -126,10 +126,19 @@ class ChordNode:
             return self.node_id
 
         self.channel.send_to({str(next_id)}, (constChord.LOOKUP_REQ, key))
-        sender, reply = self.channel.receive_from({str(next_id)})
 
-        assert reply[0] == constChord.LOOKUP_REP
-        return int(reply[1])
+        while True:
+            sender, reply = self.channel.receive_from({str(next_id)})
+
+            if reply[0] == constChord.LOOKUP_REP:
+                return int(reply[1])
+
+            if reply[0] == constChord.JOIN:
+                self.add_node(sender)
+                self.recompute_finger_table()
+            elif reply[0] == constChord.LEAVE:
+                self.delete_node(sender)
+                self.recompute_finger_table()
 
     def enter(self):
         self.channel.bind(str(self.node_id))  # bind current pid
