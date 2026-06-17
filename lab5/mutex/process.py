@@ -1,9 +1,12 @@
+"""
+Process with crash fault tolerance
+"""
+
 import logging
 import random
 import time
 
-from constMutex import ENTER, RELEASE, ALLOW, ACTIVE
-
+from constMutex import ENTER, RELEASE, ALLOW, ACTIVE, CRASHED, TIMEOUT_SECONDS, HEARTBEAT_SECONDS, HEARTBEAT
 
 class Process:
     """
@@ -45,6 +48,8 @@ class Process:
         self.clock = 0  # The current logical clock
         self.peer_name = 'unassigned'  # The original peer name
         self.peer_type = 'unassigned'  # A flag indicating behavior pattern
+        self.crashed_processes: set = set()  # Set of known crashed process IDs
+        self.last_heard: dict = {}   # pid → float (time.time())
         self.logger = logging.getLogger("vs2lab.lab5.mutex.process.Process")
 
     def __mapid(self, id='-1'):
@@ -96,14 +101,66 @@ class Process:
             processes_with_later_message)
         return first_in_queue and all_have_answered
 
+    def __handle_crash(self, crashed_pid):
+        """Remove a crashed process from the coordination group."""
+        if crashed_pid not in self.other_processes:
+            return
+        
+        self.logger.warning("{} detected CRASH of {} - removing from group.".format(
+            self.__mapid(), self.__mapid(crashed_pid)))
+        
+        # Remove from process lists
+        self.other_processes.remove(crashed_pid)
+        if crashed_pid in self.all_processes:
+            self.all_processes.remove(crashed_pid)
+        self.crashed_processes.add(crashed_pid)
+
+        # Broadcast CRASHED so other peers skip their own timeout wait
+        if self.other_processes:
+            self.clock += 1
+            self.channel.send_to(self.other_processes, (self.clock, crashed_pid, CRASHED))
+
+
+        # Remove this process's messages from the queue
+        before = len(self.queue)
+        self.queue = [msg for msg in self.queue if msg[1] != crashed_pid]
+        if len(self.queue) != before:
+            self.logger.info("{} purged {} queue entries from crashed process {}.".format(
+                self.__mapid(), before - len(self.queue), self.__mapid(crashed_pid)))
+
+        if self.queue:
+            self.__cleanup_queue()
+
+    def __detect_crashes(self):
+        """        
+        Called after every receive timeout.
+        Any peer silent for >= TIMEOUT_SECONDS is considered crashed.
+        Wall-clock time is used so old queue entries don't mask silence.
+        """
+        time_now = time.time()
+        for pid in list(self.other_processes):
+            last_seen = self.last_heard.get(pid, self.init_time)
+            if time_now - last_seen >= TIMEOUT_SECONDS:
+                self.__handle_crash(pid)
+
+    def __send_heartbeat(self):
+        if time.time() - self.last_heard[self.process_id] >= HEARTBEAT_SECONDS:
+            self.clock += 1
+            msg = (self.clock, self.process_id, HEARTBEAT)
+            self.channel.send_to(self.other_processes, msg)
+            self.last_heard[self.process_id] = time.time()
+
     def __receive(self):
-        # Pick up any message
+        if not self.other_processes:   # Return if crashed
+            return
         _receive = self.channel.receive_from(self.other_processes, 3)
         if _receive:
             msg = _receive[1]
+            sender = _receive[0]
+            self.last_heard[sender] = time.time()  # Tracks last time alive
 
-            self.clock = max(self.clock, msg[0])  # Adjust clock value...
-            self.clock = self.clock + 1  # ...and increment
+            self.clock = max(self.clock, msg[0])
+            self.clock = self.clock + 1
 
             self.logger.debug("{} received {} from {}.".format(
                 self.__mapid(),
@@ -112,26 +169,48 @@ class Process:
                 else "RELEASE", self.__mapid(msg[1])))
 
             if msg[2] == ENTER:
-                self.queue.append(msg)  # Append an ENTER request
-                # and unconditionally allow (don't want to access CS oneself)
+                # Ignore messages from known crashed processes
+                if msg[1] in self.crashed_processes:
+                    return
+                self.queue.append(msg)
                 self.__allow_to_enter(msg[1])
             elif msg[2] == ALLOW:
-                self.queue.append(msg)  # Append an ALLOW
+                if msg[1] in self.crashed_processes:
+                    return
+                self.queue.append(msg)
+            elif msg[2] == HEARTBEAT:
+                return
             elif msg[2] == RELEASE:
-                # assure release requester indeed has access (his ENTER is first in queue)
-                assert self.queue[0][1] == msg[1] and self.queue[0][2] == ENTER, 'State error: inconsistent remote RELEASE'
-                del (self.queue[0])  # Just remove first message
+                # Ignore RELEASE from crashed processes
+                if msg[1] in self.crashed_processes:
+                    return
+                # Guard: only remove if it's actually at the head of the queue
+                if self.queue and self.queue[0][1] == msg[1] and self.queue[0][2] == ENTER:
+                    del (self.queue[0])
+                else:
+                    self.logger.warning("{} received unexpected RELEASE from {} - ignoring.".format(
+                        self.__mapid(), self.__mapid(msg[1])))
+                    return
+            elif msg[2] == CRASHED:
+                crashed_process = msg[1]
+                if not crashed_process in self.crashed_processes:
+                    self.__handle_crash(msg[1])
 
-            self.__cleanup_queue()  # Finally sort and cleanup the queue
+            self.__cleanup_queue()
         else:
-            self.logger.info("{} timed out on RECEIVE. Local queue: {}".
-                             format(self.__mapid(),
-                                    list(map(lambda msg: (
-                                        'Clock '+str(msg[0]),
-                                        self.__mapid(msg[1]),
-                                        msg[2]), self.queue))))
+            # Timeout: check for crashes
+            self.logger.info("{} timed out on RECEIVE. Checking for crashes. Local queue: {}".format(
+                self.__mapid(),
+                list(map(lambda msg: (
+                    'Clock ' + str(msg[0]),
+                    self.__mapid(msg[1]),
+                    msg[2]), self.queue))))
+            self.__detect_crashes()
 
     def init(self, peer_name, peer_type):
+        self.last_heard[self.process_id] = time.time()
+        self.init_time: float = time.time()
+
         self.channel.bind(self.process_id)
 
         self.all_processes = list(self.channel.subgroup('proc'))
@@ -153,6 +232,7 @@ class Process:
             # 1) there are more than one process left and
             # 2) this peer has active behavior and
             # 3) random is true
+            self.__send_heartbeat() #! heartbeat
             if len(self.all_processes) > 1 and \
                     self.peer_type == ACTIVE and \
                     random.choice([True, False]):
@@ -161,6 +241,7 @@ class Process:
 
                 self.__request_to_enter()
                 while not self.__allowed_to_enter():
+                    self.__send_heartbeat() #! heartbeat while wait
                     self.__receive()
 
                 # Stay in CS for some time ...

@@ -1,8 +1,16 @@
+from typing import Final
+
 # Messages
 ENTER = 'ENTER'
 ALLOW = 'ALLOW'
 RELEASE = 'RELEASE'
+CRASHED = 'CRASHED'
+HEARTBEAT = 'HEARTBEAT'
 # Process behaviors
 ACTIVE = 'ACTIVE'
 PASSIVE = 'PASSIVE'
 BEHAVIOR_TYPES = [ACTIVE, PASSIVE]
+
+# Timeout Settings
+TIMEOUT_SECONDS = 5
+HEARTBEAT_SECONDS = 0.5
